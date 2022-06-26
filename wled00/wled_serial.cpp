@@ -1,187 +1,122 @@
+//##### SETTINGS ############
+
+#define BAUDRATE   921600   // Serial port speed
+#define NUM_LEDS   116     // Number of leds
+#define BRIGHTNESS   255    // Maximum brightness
+#define LED_TYPE   APA102  // Led strip type for FastLED
+#define COLOR_ORDER  GRB    // Led color order
+#define PIN_DATA   4     // Led data output pin
+#define PIN_CLOCK  2      // Led data clock pin (uncomment if you're using a 4-wire LED type)
+
+//###########################
+
+
+
+
+#if defined(ESP8266)
+#define FASTLED_ESP8266_RAW_PIN_ORDER
+#endif
+
 #include "wled.h"
+#include <FastLED.h>
 
-/*
- * Adalight and TPM2 handler
- */
+CRGB leds[NUM_LEDS];
+uint8_t* ledsRaw = (uint8_t*)leds;
 
-enum class AdaState {
-  Header_A,
-  Header_d,
-  Header_a,
-  Header_CountHi,
-  Header_CountLo,
-  Header_CountCheck,
-  Data_Red,
-  Data_Green,
-  Data_Blue,
-  TPM2_Header_Type,
-  TPM2_Header_CountHi,
-  TPM2_Header_CountLo,
-};
+const uint8_t magic[] = { 'A','d','a' };
+#define MAGICSIZE  sizeof(magic)
+#define HICHECK    (MAGICSIZE)
+#define LOCHECK    (MAGICSIZE + 1)
+#define CHECKSUM   (MAGICSIZE + 2)
 
-uint16_t currentBaud = 1152; //default baudrate 115200 (divided by 100)
+enum processModes_t { Header, Data } mode = Header;
 
-void updateBaudRate(uint32_t rate){
-  uint16_t rate100 = rate/100;
-  if (rate100 == currentBaud || rate100 < 96) return;
-  currentBaud = rate100;
+int16_t c, outPos, bytesRemaining;
+unsigned long t, lastByteTime;
+uint8_t headPos, hi, lo, chk;
 
-  if (!pinManager.isPinAllocated(1) || pinManager.getPinOwner(1) == PinOwner::DebugOut){
-    Serial.print(F("Baud is now ")); Serial.println(rate);
-  }
+void setup2() {
+#if defined(PIN_CLOCK) && defined(PIN_DATA)
+    FastLED.addLeds<LED_TYPE, PIN_DATA, PIN_CLOCK, COLOR_ORDER>(leds, NUM_LEDS);
+#elif defined(PIN_DATA)
+    FastLED.addLeds<LED_TYPE, PIN_DATA, COLOR_ORDER>(leds, NUM_LEDS);
+#else
+#error "No LED output pins defined. Check your settings at the top."
+#endif
 
-  Serial.flush();
-  Serial.begin(rate);
+    FastLED.setBrightness(BRIGHTNESS);
+    FastLED.show();
+
+#if defined(ESP8266)
+    Serial.setRxBufferSize(2048);
+#endif
+
+    Serial.begin(BAUDRATE);
+
+#if defined(ESP8266)
+    delay(500);
+    Serial.swap(); // RX pin will be GPIO13
+    delay(500);
+#endif
+
+    lastByteTime = millis();
 }
-  
-void handleSerial()
-{
-  if (pinManager.isPinAllocated(3)) return;
-  
-  #ifdef WLED_ENABLE_ADALIGHT
-  static auto state = AdaState::Header_A;
-  static uint16_t count = 0;
-  static uint16_t pixel = 0;
-  static byte check = 0x00;
-  static byte red   = 0x00;
-  static byte green = 0x00;
 
-  while (Serial.available() > 0)
-  {
-    yield();
-    byte next = Serial.peek();
-    switch (state) {
-      case AdaState::Header_A:
-        if (next == 'A') state = AdaState::Header_d;
-        else if (next == 0xC9) { //TPM2 start byte
-          state = AdaState::TPM2_Header_Type;
-        }
-        else if (next == 'I') {
-          handleImprovPacket();
-          return;
-        } else if (next == 'v') {
-          Serial.print("WLED"); Serial.write(' '); Serial.println(VERSION);
-     
-        } else if (next == 0xB0) {updateBaudRate( 115200);
-        } else if (next == 0xB1) {updateBaudRate( 230400);
-        } else if (next == 0xB2) {updateBaudRate( 460800);
-        } else if (next == 0xB3) {updateBaudRate( 500000);
-        } else if (next == 0xB4) {updateBaudRate( 576000);
-        } else if (next == 0xB5) {updateBaudRate( 921600);
-        } else if (next == 0xB6) {updateBaudRate(1000000);
-        } else if (next == 0xB7) {updateBaudRate(1500000);
-        
-        } else if (next == 'l') { //RGB(W) LED data return as JSON array. Slow, but easy to use on the other end.
-          if (!pinManager.isPinAllocated(1) || pinManager.getPinOwner(1) == PinOwner::DebugOut){
-            uint16_t used = strip.getLengthTotal();
-            Serial.write('[');
-            for (uint16_t i=0; i<used; i+=1) {
-              Serial.print(strip.getPixelColor(i));
-              if (i != used-1) Serial.write(',');
+void loop2() {
+    t = millis();
+
+    if ((c = Serial.read()) >= 0) {
+        lastByteTime = t;
+
+        switch (mode) {
+        case Header:
+            if (headPos < MAGICSIZE) {
+                if (c == magic[headPos]) { headPos++; }
+                else { headPos = 0; }
             }
-            Serial.println("]");
-          }  
-        } else if (next == 'L') { //RGB LED data returned as bytes in tpm2 format. Faster, and slightly less easy to use on the other end.
-          if (!pinManager.isPinAllocated(1) || pinManager.getPinOwner(1) == PinOwner::DebugOut) {
-            Serial.write(0xC9); Serial.write(0xDA);
-            uint16_t used = strip.getLengthTotal();
-            uint16_t len = used*3;
-            Serial.write(highByte(len));
-            Serial.write(lowByte(len));
-            for (uint16_t i=0; i < used; i++) {
-              uint32_t c = strip.getPixelColor(i);
-              Serial.write(qadd8(W(c), R(c))); //R, add white channel to RGB channels as a simple RGBW -> RGB map
-              Serial.write(qadd8(W(c), G(c))); //G
-              Serial.write(qadd8(W(c), B(c))); //B
+            else {
+                switch (headPos) {
+                case HICHECK:
+                    hi = c;
+                    headPos++;
+                    break;
+                case LOCHECK:
+                    lo = c;
+                    headPos++;
+                    break;
+                case CHECKSUM:
+                    chk = c;
+                    if (chk == (hi ^ lo ^ 0x55)) {
+                        bytesRemaining = 3L * (256L * (long)hi + (long)lo + 1L);
+                        outPos = 0;
+                        memset(leds, 0, NUM_LEDS * sizeof(struct CRGB));
+                        mode = Data;
+                    }
+                    headPos = 0;
+                    break;
+                }
             }
-            Serial.write(0x36); Serial.write('\n');
-          }
-        } else if (next == '{') { //JSON API
-          bool verboseResponse = false;
-          #ifdef WLED_USE_DYNAMIC_JSON
-          DynamicJsonDocument doc(JSON_BUFFER_SIZE);
-          #else
-          if (!requestJSONBufferLock(16)) return;
-          #endif
-          Serial.setTimeout(100);
-          DeserializationError error = deserializeJson(doc, Serial);
-          if (error) {
-            releaseJSONBufferLock();
-            return;
-          }
-          verboseResponse = deserializeState(doc.as<JsonObject>());
-          //only send response if TX pin is unused for other purposes
-          if (verboseResponse && (!pinManager.isPinAllocated(1) || pinManager.getPinOwner(1) == PinOwner::DebugOut)) {
-            doc.clear();
-            JsonObject state = doc.createNestedObject("state");
-            serializeState(state);
-            JsonObject info  = doc.createNestedObject("info");
-            serializeInfo(info);
+            break;
+        case Data:
+            if (outPos < sizeof(leds)) {
+                ledsRaw[outPos++] = c;
+            }
+            bytesRemaining--;
 
-            serializeJson(doc, Serial);
-            Serial.println();
-          }
-          releaseJSONBufferLock();
+            if (bytesRemaining == 0) {
+                mode = Header;
+                while (Serial.available() > 0) {
+                    Serial.read();
+                }
+                if (!realtimeOverride) FastLED.show();
+            }
+            break;
         }
-        break;
-      case AdaState::Header_d:
-        if (next == 'd') state = AdaState::Header_a;
-        else             state = AdaState::Header_A;
-        break;
-      case AdaState::Header_a:
-        if (next == 'a') state = AdaState::Header_CountHi;
-        else             state = AdaState::Header_A;
-        break;
-      case AdaState::Header_CountHi:
-        pixel = 0;
-        count = next * 0x100;
-        check = next;
-        state = AdaState::Header_CountLo;
-        break;
-      case AdaState::Header_CountLo:
-        count += next + 1;
-        check = check ^ next ^ 0x55;
-        state = AdaState::Header_CountCheck;
-        break;
-      case AdaState::Header_CountCheck:
-        if (check == next) state = AdaState::Data_Red;
-        else               state = AdaState::Header_A;
-        break;
-      case AdaState::TPM2_Header_Type:
-        state = AdaState::Header_A; //(unsupported) TPM2 command or invalid type
-        if (next == 0xDA) state = AdaState::TPM2_Header_CountHi; //TPM2 data
-        else if (next == 0xAA) Serial.write(0xAC); //TPM2 ping
-        break;
-      case AdaState::TPM2_Header_CountHi:
-        pixel = 0;
-        count = (next * 0x100) /3;
-        state = AdaState::TPM2_Header_CountLo;
-        break;
-      case AdaState::TPM2_Header_CountLo:
-        count += next /3;
-        state = AdaState::Data_Red;
-        break;
-      case AdaState::Data_Red:
-        red   = next;
-        state = AdaState::Data_Green;
-        break;
-      case AdaState::Data_Green:
-        green = next;
-        state = AdaState::Data_Blue;
-        break;
-      case AdaState::Data_Blue:
-        byte blue  = next;
-        if (!realtimeOverride) setRealtimePixel(pixel++, red, green, blue, 0);
-        if (--count > 0) state = AdaState::Data_Red;
-        else {
-          realtimeLock(realtimeTimeoutMs, REALTIME_MODE_ADALIGHT);
-
-          if (!realtimeOverride) strip.show();
-          state = AdaState::Header_A;
-        }
-        break;
     }
-    Serial.read(); //discard the byte
-  }
-  #endif
+    else if (((t - lastByteTime) >= (uint32_t)120 * 60 * 1000 && mode == Header) || ((t - lastByteTime) >= (uint32_t)1000 && mode == Data)) {
+        memset(leds, 0, NUM_LEDS * sizeof(struct CRGB));
+        if (!realtimeOverride) FastLED.show();
+        mode = Header;
+        lastByteTime = t;
+    }
 }
