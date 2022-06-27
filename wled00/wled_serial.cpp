@@ -1,24 +1,22 @@
 //##### SETTINGS ############
 
 #define BAUDRATE   921600   // Serial port speed
-#define NUM_LEDS   116     // Number of leds
+#define NUM_LEDS   116      // Number of leds
 #define BRIGHTNESS   255    // Maximum brightness
-#define LED_TYPE   APA102  // Led strip type for FastLED
-#define COLOR_ORDER  GRB    // Led color order
-#define PIN_DATA   4     // Led data output pin
-#define PIN_CLOCK  2      // Led data clock pin (uncomment if you're using a 4-wire LED type)
+// #define LED_TYPE   APA102   Led strip type for FastLED
+// #define COLOR_ORDER  GRB     Led color order
+// #define PIN_DATA   4      Led data output pin
+// #define PIN_CLOCK  2       Led data clock pin (uncomment if you're using a 4-wire LED type)
 
 //###########################
 
 
 
-
-#if defined(ESP8266)
-#define FASTLED_ESP8266_RAW_PIN_ORDER
-#endif
+// if defined(ESP8266)
+// define FASTLED_ESP8266_RAW_PIN_ORDER
+// endif
 
 #include "wled.h"
-#include <FastLED.h>
 
 CRGB leds[NUM_LEDS];
 uint8_t* ledsRaw = (uint8_t*)leds;
@@ -36,28 +34,28 @@ unsigned long t, lastByteTime;
 uint8_t headPos, hi, lo, chk;
 
 void setup2() {
-#if defined(PIN_CLOCK) && defined(PIN_DATA)
-    FastLED.addLeds<LED_TYPE, PIN_DATA, PIN_CLOCK, COLOR_ORDER>(leds, NUM_LEDS);
-#elif defined(PIN_DATA)
-    FastLED.addLeds<LED_TYPE, PIN_DATA, COLOR_ORDER>(leds, NUM_LEDS);
-#else
-#error "No LED output pins defined. Check your settings at the top."
-#endif
+// if defined(PIN_CLOCK) && defined(PIN_DATA)
+//     FastLED.addLeds<LED_TYPE, PIN_DATA, PIN_CLOCK, COLOR_ORDER>(leds, NUM_LEDS);
+// elif defined(PIN_DATA)
+//     FastLED.addLeds<LED_TYPE, PIN_DATA, COLOR_ORDER>(leds, NUM_LEDS);
+// else
+// error "No LED output pins defined. Check your settings at the top."
+// endif
 
-    FastLED.setBrightness(BRIGHTNESS);
-    FastLED.show();
+    strip.setBrightness(BRIGHTNESS);
+    strip.show();
 
-#if defined(ESP8266)
-    Serial.setRxBufferSize(2048);
-#endif
+    if defined(ESP8266)
+        Serial.setRxBufferSize(2048);
+    endif
 
     Serial.begin(BAUDRATE);
 
-#if defined(ESP8266)
-    delay(500);
-    Serial.swap(); // RX pin will be GPIO13
-    delay(500);
-#endif
+    if defined(ESP8266)
+        delay(500);
+        Serial.swap(); // RX pin will be GPIO13
+        delay(500);
+    endif
 
     lastByteTime = millis();
 }
@@ -108,14 +106,14 @@ void loop2() {
                 while (Serial.available() > 0) {
                     Serial.read();
                 }
-                if (!realtimeOverride) FastLED.show();
+                if (!realtimeOverride) strip.show();
             }
             break;
         }
     }
     else if (((t - lastByteTime) >= (uint32_t)120 * 60 * 1000 && mode == Header) || ((t - lastByteTime) >= (uint32_t)1000 && mode == Data)) {
         memset(leds, 0, NUM_LEDS * sizeof(struct CRGB));
-        if (!realtimeOverride) FastLED.show();
+        if (!realtimeOverride) strip.show();
         mode = Header;
         lastByteTime = t;
     }
